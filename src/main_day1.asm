@@ -35,6 +35,7 @@ main:
 
     push ebx
     push esi
+    push edi
 
     ; Read input
     push input_capacity - 1
@@ -176,6 +177,7 @@ main:
     ; Exit status
     mov eax, 0
 
+    pop edi
     pop esi
     pop ebx
 
