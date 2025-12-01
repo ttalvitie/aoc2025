@@ -1,2 +1,2 @@
 # aoc2025
-Advent of Code 2025 solved using i386 assembly. Requires NASM to build and Linux to run (using bare syscalls). Python script `build.py` builds all binaries, and `test.py` tests against input/output pairs in the `data` directory (secret personal inputs/outputs are not included).
+Advent of Code 2025 solved using i386 assembly. Requires NASM to build and Linux to run (using bare syscalls). Code uses mostly stdcall calling convention (arguments passed in stack cleaned up by callee, return value in eax or (eax, edx), volatile registers are eax, ecx and edx). Python script `build.py` builds all binaries, and `test.py` tests against input/output pairs in the `data` directory (secret personal inputs/outputs are not included in the public repo).
