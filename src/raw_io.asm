@@ -1,9 +1,6 @@
-global write_all_stdout
-global read_some_stdin
-global read_all_stdin
+%include "raw_io.inc"
 
 %include "exit.inc"
-%include "raw_io.inc"
 
 
 write_all_stdout:

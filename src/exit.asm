@@ -1,5 +1,3 @@
-global exit
-
 %include "exit.inc"
 
 exit:

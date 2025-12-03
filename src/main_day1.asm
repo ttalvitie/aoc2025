@@ -1,7 +1,7 @@
-global main
+extern main
 
 %include "exit.inc"
-%include "number.inc"
+%include "number_str.inc"
 %include "raw_io.inc"
 
 
@@ -12,7 +12,7 @@ input: resb 1000000
 input_capacity: equ $ - input
 
 output: resb 100
-output_capacity: equ $ - input
+output_capacity: equ $ - output
 
 
 section .text

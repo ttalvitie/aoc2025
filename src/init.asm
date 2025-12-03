@@ -1,6 +1,6 @@
 %include "exit.inc"
 
-global _start
+extern _start
 extern main
 
 
