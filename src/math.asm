@@ -19,7 +19,6 @@ div_ulong_by_uint:
 
     ; Reduce to the case where we replace a_high by a_high % b. We just need to add
     ; a_high / b to the high bits of the resulting quotient (stored in ecx).
-    ; resulting quotient.
     mov ecx, eax
     mov [a_high], edx
 

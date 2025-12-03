@@ -31,17 +31,104 @@ ranges_count: resd 1
 section .text
 
 
+; Checks whether given pattern is minimal (cannot be subdivided into a repeating sub-pattern)
+is_pattern_minimal:
+    %push
+    %stacksize flat
+
+    %arg pattern:dword
+    %arg pattern_length:dword
+    %arg exp_pattern_length:dword
+
+    %assign %$localsize 0
+    %local sub_pattern_length:dword
+    %local exp_sub_pattern_length:dword
+    %local truncator:dword
+    %local head:dword
+    %local tail:dword
+
+    push ebp
+    mov ebp, esp
+    sub esp, %$localsize
+
+    ; Loop through all repeating sub-patterns lengths up to [pattern_length]
+    mov dword [sub_pattern_length], 1
+    mov dword [exp_sub_pattern_length], 10
+.loop:
+    mov eax, [pattern_length]
+    cmp [sub_pattern_length], eax
+    jae .split_not_found
+
+    ; Skip cases where [sub_pattern_length] is not divisible by [pattern_length]
+    mov eax, [pattern_length]
+    xor edx, edx
+    div dword [sub_pattern_length]
+    cmp edx, 0
+    jne .continue
+
+    ; If the sub-pattern length is a proper split, [pattern] / [exp_sub_pattern_length] should be
+    ; equal to [pattern] % ([exp_pattern_length] / [exp_sub_pattern_length])
+
+    ; First compute [truncator] = [exp_pattern_length] / [exp_sub_pattern_length]
+    mov eax, [exp_pattern_length]
+    xor edx, edx
+    div dword [exp_sub_pattern_length]
+    mov [truncator], eax
+
+    ; Then compute [head] = [pattern] / [exp_sub_pattern_length]
+    mov eax, [pattern]
+    xor edx, edx
+    div dword [exp_sub_pattern_length]
+    mov [head], eax
+
+    ; Then compute [tail] = [pattern] % [truncator]
+    mov eax, [pattern]
+    xor edx, edx
+    div dword [truncator]
+    mov [tail], edx
+
+    ; We have a split if [head] = [tail]
+    mov eax, [tail]
+    cmp [head], eax
+    je .split_found
+
+.continue:
+    ; Proceed to the next sub-pattern length
+    mov eax, 10
+    mul dword [exp_sub_pattern_length]
+    mov [exp_sub_pattern_length], eax
+    inc dword [sub_pattern_length]
+    jmp .loop
+
+.split_found:
+    mov eax, 0
+    jmp .done
+
+.split_not_found:
+    mov eax, 1
+
+.done:
+    add esp, %$localsize
+    pop ebp
+    ret 12
+
+    %pop
+
+
 main:
     %push
     %stacksize flat
 
     %assign %$localsize 0
-    %local half_length:dword
-    %local half_id_range_start:dword
-    %local half_id_range_end:dword
-    %local half_id:dword
+    %local pattern_length:dword
+    %local pattern_range_start:dword
+    %local pattern_range_end:dword
+    %local pattern:dword
+    %local rep_count:dword
     %local sum_low:dword
     %local sum_high:dword
+    %local sum2_low:dword
+    %local sum2_high:dword
 
     push ebp
     mov ebp, esp
@@ -99,25 +186,28 @@ main:
     cmp byte [esi+1], 0
     jne .parse_error
 
-    ; Initialize variables for output sum
+    ; Initialize variables for output sums
     mov dword [sum_low], 0
     mov dword [sum_high], 0
+    mov dword [sum2_low], 0
+    mov dword [sum2_high], 0
 
-    ; Loop through all possible half-lengths of invalid IDs, maintaining the range of half-IDs
-    ; with that length as [half_id_range_start, half_id_range_end)
-    mov dword [half_length], 1
-    mov dword [half_id_range_start], 1
-    mov dword [half_id_range_end], 10
-.half_length_loop:
-    ; Loop through all half-IDs of length [half_length]
-    mov eax, [half_id_range_start]
-    mov [half_id], eax
-.half_id_loop:
-    ; Generate the full ID to edx:eax
-    mov eax, [half_id_range_end]
-    inc eax
-    mul dword [half_id]
-
+    ; Loop through all possible pattern lengths of invalid IDs, maintaining the range of patterns
+    ; with that length as [pattern_range_start, pattern_range_end)
+    mov dword [pattern_length], 1
+    mov dword [pattern_range_start], 1
+    mov dword [pattern_range_end], 10
+.pattern_length_loop:
+    ; Loop through all patterns of length [pattern_length]
+    mov eax, [pattern_range_start]
+    mov [pattern], eax
+.pattern_loop:
+    ; Loop through all repetition counts of the pattern; edx:eax = ID obtained by repeating the
+    ; pattern
+    mov dword [rep_count], 1
+    mov eax, [pattern]
+    xor edx, edx
+.rep_count_loop:
     ; Loop over ranges to check whether edx:eax is in any of them; esi = range index,
     ; edi = range pointer
     xor esi, esi
@@ -147,36 +237,86 @@ main:
     jmp .range_loop
 
 .matching_range_found:
-    ; Add the ID edx:eax to the sum of invalid IDs
+    ; If repetition count is 2, add the ID edx:eax to the sum of invalid IDs with original
+    ; definition
+    cmp dword [rep_count], 2
+    jne .rep_count_2_case_done
     add [sum_low], eax
     adc [sum_high], edx
+.rep_count_2_case_done:
+
+    ; For the new definition, we add the ID to the sum if the pattern is minimal and repetition
+    ; count is at least 2
+    cmp dword [rep_count], 2
+    jb .range_checks_done
+    push eax
+    push edx
+    push dword [pattern_range_end]
+    push dword [pattern_length]
+    push dword [pattern]
+    call is_pattern_minimal
+    cmp eax, 0
+    pop edx
+    pop eax
+    je .range_checks_done
+    add [sum2_low], eax
+    adc [sum2_high], edx
 
 .range_checks_done:
 
-    ; Increment half-ID, continue loop unless limit is reached
-    inc dword [half_id]
-    mov eax, [half_id]
-    cmp eax, [half_id_range_end]
-    jb .half_id_loop
+    ; Increase repetition count and proceed to next loop iteration unless the ID overflows
+    mov ecx, edx
+    mul dword [pattern_range_end]
+    push eax
+    push edx
+    mov eax, ecx
+    mul dword [pattern_range_end]
+    mov ecx, eax
+    pop edx
+    pop eax
+    jc .rep_count_loop_done
+    add edx, ecx
+    jc .rep_count_loop_done
+    add eax, [pattern]
+    adc edx, 0
+    jc .rep_count_loop_done
+    inc dword [rep_count]
+    jmp .rep_count_loop
 
-    ; Increment the half-length and the corresponding half-ID range and continue loop unless limit
-    ; is reached
-    inc dword [half_length]
-    mov eax, [half_id_range_end]
-    mov [half_id_range_start], eax
-    mov eax, [half_id_range_end]
+.rep_count_loop_done:
+
+    ; Increment pattern, continue loop unless limit is reached
+    inc dword [pattern]
+    mov eax, [pattern]
+    cmp eax, [pattern_range_end]
+    jb .pattern_loop
+
+    ; Increment the pattern length and the corresponding pattern range and continue loop unless
+    ; limit is reached
+    inc dword [pattern_length]
+    mov eax, [pattern_range_end]
+    mov [pattern_range_start], eax
+    mov eax, [pattern_range_end]
     mov edx, 10
     mul edx
-    mov [half_id_range_end], eax
-    cmp dword [half_length], 5
-    jle .half_length_loop
+    mov [pattern_range_end], eax
+    cmp dword [pattern_length], 5
+    jle .pattern_length_loop
 
     ; Generate output string
     mov edi, output
-    push output_capacity - 1
+    push output_capacity / 2 - 1
     push edi
     push dword [sum_high]
     push dword [sum_low]
+    call ulong_to_str
+    add edi, eax
+    mov byte [edi], `\n`
+    inc edi
+    push output_capacity / 2 - 1
+    push edi
+    push dword [sum2_high]
+    push dword [sum2_low]
     call ulong_to_str
     add edi, eax
     mov byte [edi], `\n`
@@ -198,8 +338,8 @@ main:
     pop ebp
     ret
 
-    %pop
-
 .parse_error:
     push 1
     call exit
+
+    %pop
