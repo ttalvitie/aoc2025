@@ -26,15 +26,129 @@ output_capacity: equ $ - output
 
 section .text
 
+; Optimize the batteries turned on in a single bank
+; (bank start pointer, bank length, number of batteries to turn on) -> (result low bits, result high bits)
+optimize_bank:
+    %push
+    %stacksize flat
+
+    %arg bank:dword
+    %arg bank_length:dword
+    %arg set_size:dword
+
+    %assign %$localsize 0
+    %local selected_count:dword
+
+    push ebp
+    mov ebp, esp
+    sub esp, %$localsize
+
+    ; Check argument validity
+    mov eax, [bank_length]
+    cmp eax, 0
+    jle .failure
+    cmp [set_size], eax
+    ja .failure
+    cmp dword [set_size], 18
+    ja .failure
+
+    ; Allocate stack space for the array of selected digits and terminating 0-byte, initialize its
+    ; length to 0
+    dec esp
+    mov byte [esp], 0
+    sub esp, [set_size]
+    mov dword [selected_count], 0
+
+    ; Iterate through the digits, optimizing the selection. [bank] points to the next digit, and
+    ; [bank_length] is the number of remaining digits
+.digit_loop:
+    cmp dword [bank_length], 0
+    je .digit_loop_done
+
+    ; Find the position to place the next digit in the array of selected digits. We want to place
+    ; it after the last digit that is equal or larger to it, erasing all the digits after it.
+    ; However, we only consider the suffix of length at most [bank_length] to ensure that the
+    ; array of selected digits gets filled. Set ecx to the index of the first possible position.
+    mov ecx, [set_size]
+    sub ecx, [bank_length]
+    cmp ecx, [selected_count]
+    jg .failure
+    cmp ecx, 0
+    jge .nonnegative
+    xor ecx, ecx
+.nonnegative:
+
+    ; Read the digit (+ '0') to al
+    mov edx, [bank]
+    xor eax, eax
+    mov al, [edx]
+
+    ; Increment ecx until a smaller digit or the end of the selected digits is reached
+.find_place_loop:
+    cmp ecx, [selected_count]
+    ja .failure
+    je .find_place_loop_done
+    cmp [esp+ecx], al
+    jb .find_place_loop_done
+    inc ecx
+    jmp .find_place_loop
+
+.find_place_loop_done:
+
+    ; If the index ecx is within the capacity of the array, place the digit there and set the end
+    ; of the array after it
+    cmp ecx, [set_size]
+    ja .failure
+    je .skip_place
+    mov [esp+ecx], al
+    mov [selected_count], ecx
+    inc dword [selected_count]
+.skip_place:
+
+    inc dword [bank]
+    dec dword [bank_length]
+    jmp .digit_loop
+.digit_loop_done:
+
+    ; Sanity check state
+    mov eax, [selected_count]
+    cmp eax, [set_size]
+    jne .failure
+
+    ; Parse digits from stack to return value edx:eax
+    push esp
+    call parse_ulong
+
+    ; Free stack space for the array (except the 0-byte)
+    add esp, [set_size]
+
+    ; Check that the full array was parsed
+    cmp ecx, esp
+    jne .failure
+
+    ; Free the 0-byte from stack
+    inc esp
+
+    add esp, %$localsize
+    pop ebp
+    ret 12
+
+.failure:
+    push 2
+    call exit
+
+    %pop
+
 
 main:
     %push
     %stacksize flat
 
     %assign %$localsize 0
-    %local output_joltage:dword
-    %local best_first_battery:dword
-    %local best_second_battery:dword
+    %local joltage1_low:dword
+    %local joltage1_high:dword
+    %local joltage2_low:dword
+    %local joltage2_high:dword
 
     push ebp
     mov ebp, esp
@@ -51,60 +165,51 @@ main:
     ; Add 0-byte to end of input
     mov byte [input+eax], 0
 
-    ; Initialize output joltage
-    mov dword [output_joltage], 0
+    ; Initialize results joltages
+    mov dword [joltage1_low], 0
+    mov dword [joltage1_high], 0
+    mov dword [joltage2_low], 0
+    mov dword [joltage2_high], 0
 
-    ; Loop through battery banks, generating the output joltage. esi = read position
+    ; Loop through battery banks, generating the output joltages. esi = read position
     mov esi, input
 .bank_loop:
     ; Break if we are out of input
     cmp byte [esi], 0
     je .bank_loop_done
 
-    ; Read one digit at a time, keeping track of the maximum pair
-    mov dword [best_first_battery], -1
-    mov dword [best_second_battery], -1
+    ; Find edi = end of bank
+    mov edi, esi
 .digit_loop:
-    ; Break if the line has ended
-    cmp byte [esi], `\n`
+    cmp byte [edi], `\n`
     je .digit_loop_done
-
-    ; Check that the digit is valid
-    cmp byte [esi], '0'
+    cmp byte [edi], '0'
     jl .parse_error
-    cmp byte [esi], '9'
+    cmp byte [edi], '9'
     jg .parse_error
-
-    ; Update the maximum pair
-    xor eax, eax
-    mov al, [esi]
-    sub eax, '0'
-    cmp eax, [best_first_battery]
-    jle .no_update_first
-    ; Only update first if this is not the last battery
-    cmp byte [esi+1], `\n`
-    je .no_update_first
-    mov [best_first_battery], eax
-    mov dword [best_second_battery], -1
-    jmp .update_done
-.no_update_first:
-    cmp eax, [best_second_battery]
-    jle .update_done
-    mov [best_second_battery], eax
-
-.update_done:
-    ; Continue loop
-    inc esi
+    inc edi
     jmp .digit_loop
-
 .digit_loop_done:
-    ; Add the joltage from this bank to the result
-    mov eax, 10
-    mul dword [best_first_battery]
-    add eax, [best_second_battery]
-    add dword [output_joltage], eax
+
+    ; Make edi the length of the bank
+    sub edi, esi
+
+    ; Add result joltages for this bank
+    push dword 2
+    push edi
+    push esi
+    call optimize_bank
+    add [joltage1_low], eax
+    adc [joltage1_high], edx
+    push dword 12
+    push edi
+    push esi
+    call optimize_bank
+    add [joltage2_low], eax
+    adc [joltage2_high], edx
 
     ; Continue the loop over banks
+    add esi, edi
     inc esi
     jmp .bank_loop
 
@@ -112,10 +217,19 @@ main:
 
     ; Generate output string
     mov edi, output
-    push output_capacity - 1
+    push output_capacity / 2 - 1
     push edi
-    push dword [output_joltage]
-    call uint_to_str
+    push dword [joltage1_high]
+    push dword [joltage1_low]
+    call ulong_to_str
+    add edi, eax
+    mov byte [edi], `\n`
+    inc edi
+    push output_capacity / 2 - 1
+    push edi
+    push dword [joltage2_high]
+    push dword [joltage2_low]
+    call ulong_to_str
     add edi, eax
     mov byte [edi], `\n`
     inc edi
