@@ -117,6 +117,7 @@ def test() -> int:
             log(
                 f"ERROR: Binary named '{binary_name}' required by input '{name}.in' does not exist in the bin directory"
             )
+            sys.exit(1)
         jobs.append(job)
 
     with multiprocessing.pool.ThreadPool(4) as pool:
