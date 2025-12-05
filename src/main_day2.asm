@@ -1,6 +1,7 @@
 extern main
 
 %include "exit.inc"
+%include "io.inc"
 %include "math.inc"
 %include "number_str.inc"
 %include "raw_io.inc"
@@ -20,13 +21,11 @@ section .bss
 input: resb 1000
 input_capacity: equ $ - input
 
-output: resb 100
-output_capacity: equ $ - output
-
 ranges_capacity: equ 100
 ranges: resb Range_size * ranges_capacity
 
 ranges_count: resd 1
+
 
 section .text
 
@@ -303,30 +302,13 @@ main:
     cmp dword [pattern_length], 5
     jle .pattern_length_loop
 
-    ; Generate output string
-    mov edi, output
-    push output_capacity / 2 - 1
-    push edi
+    ; Write output to stdout
     push dword [sum_high]
     push dword [sum_low]
-    call ulong_to_str
-    add edi, eax
-    mov byte [edi], `\n`
-    inc edi
-    push output_capacity / 2 - 1
-    push edi
+    call write_ulong_line_to_stdout
     push dword [sum2_high]
     push dword [sum2_low]
-    call ulong_to_str
-    add edi, eax
-    mov byte [edi], `\n`
-    inc edi
-    sub edi, output
-
-    ; Write output to stdout
-    push edi
-    push output
-    call write_all_stdout
+    call write_ulong_line_to_stdout
 
     ; Exit status
     mov eax, 0

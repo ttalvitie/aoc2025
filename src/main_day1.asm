@@ -1,6 +1,7 @@
 extern main
 
 %include "exit.inc"
+%include "io.inc"
 %include "number_str.inc"
 %include "raw_io.inc"
 
@@ -10,9 +11,6 @@ section .bss
 
 input: resb 1000000
 input_capacity: equ $ - input
-
-output: resb 100
-output_capacity: equ $ - output
 
 
 section .text
@@ -35,7 +33,6 @@ main:
 
     push ebx
     push esi
-    push edi
 
     ; Read input
     push input_capacity - 1
@@ -149,35 +146,17 @@ main:
     jmp .loop
 
 .done:
-    ; Generate output string
-    mov edi, output
-    push output_capacity / 2 - 1
-    push edi
-    push dword [stop_at_zero_count]
-    call uint_to_str
-    add edi, eax
-    mov byte [edi], `\n`
-    inc edi
-    push output_capacity / 2 - 1
-    push edi
-    mov eax, [pass_zero_count]
-    add eax, [stop_at_zero_count]
-    push eax
-    call uint_to_str
-    add edi, eax
-    mov byte [edi], `\n`
-    inc edi
-    sub edi, output
-
     ; Write output to stdout
-    push edi
-    push output
-    call write_all_stdout
+    push dword [stop_at_zero_count]
+    call write_uint_line_to_stdout
+    push dword [stop_at_zero_count]
+    mov eax, [pass_zero_count]
+    add [esp], eax
+    call write_uint_line_to_stdout
 
     ; Exit status
     mov eax, 0
 
-    pop edi
     pop esi
     pop ebx
 

@@ -1,6 +1,7 @@
 extern main
 
 %include "exit.inc"
+%include "io.inc"
 %include "math.inc"
 %include "number_str.inc"
 %include "raw_io.inc"
@@ -187,7 +188,6 @@ main:
     sub esp, %$localsize
 
     push esi
-    push edi
 
     ; Read input
     push input_capacity - 1
@@ -262,33 +262,15 @@ main:
     jmp .removal_loop
 .removal_loop_done:
 
-    ; Generate output string
-    mov edi, output
-    push output_capacity / 2 - 1
-    push edi
-    push dword [accessible_count]
-    call uint_to_str
-    add edi, eax
-    mov byte [edi], `\n`
-    inc edi
-    push output_capacity / 2 - 1
-    push edi
-    push dword [removable_count]
-    call uint_to_str
-    add edi, eax
-    mov byte [edi], `\n`
-    inc edi
-    sub edi, output
-
     ; Write output to stdout
-    push edi
-    push output
-    call write_all_stdout
+    push dword [accessible_count]
+    call write_uint_line_to_stdout
+    push dword [removable_count]
+    call write_uint_line_to_stdout
 
     ; Exit status
     mov eax, 0
 
-    pop edi
     pop esi
 
     add esp, %$localsize
