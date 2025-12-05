@@ -6,14 +6,6 @@ extern main
 %include "raw_io.inc"
 
 
-struc Range
-    .start_low resd 1
-    .start_high resd 1
-    .end_low resd 1
-    .end_high resd 1
-endstruc
-
-
 section .bss
 
 
@@ -25,6 +17,7 @@ output_capacity: equ $ - output
 
 
 section .text
+
 
 ; Optimize the batteries turned on in a single bank
 ; (bank start pointer, bank length, number of batteries to turn on) -> (result low bits, result high bits)
@@ -165,7 +158,7 @@ main:
     ; Add 0-byte to end of input
     mov byte [input+eax], 0
 
-    ; Initialize results joltages
+    ; Initialize result joltages
     mov dword [joltage1_low], 0
     mov dword [joltage1_high], 0
     mov dword [joltage2_low], 0
