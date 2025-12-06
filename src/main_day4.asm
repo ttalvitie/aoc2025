@@ -13,9 +13,6 @@ section .bss
 input: resb 100000
 input_capacity: equ $ - input
 
-output: resb 100
-output_capacity: equ $ - output
-
 tmp: resb input_capacity
 
 
