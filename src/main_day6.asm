@@ -26,6 +26,8 @@ main:
     %local height:dword
     %local grand_total_low:dword
     %local grand_total_high:dword
+    %local grand_total2_low:dword
+    %local grand_total2_high:dword
     %local last_row_pos:dword
     %local column_width:dword
     %local is_last_column:dword
@@ -85,6 +87,8 @@ main:
     ; Perform the computations for each column
     mov dword [grand_total_low], 0
     mov dword [grand_total_high], 0
+    mov dword [grand_total2_low], 0
+    mov dword [grand_total2_high], 0
     mov [last_row_pos], esi
     mov eax, [width]
     sub [last_row_pos], eax
@@ -203,6 +207,92 @@ main:
     add [grand_total_low], eax
     adc [grand_total_high], edx
 
+    ; Proceed to perform the computation using the vertical definition
+    mov dword [value_low], 0
+    mov dword [value_high], 0
+    mov ebx, [last_row_pos]
+    cmp byte [ebx], '*'
+    jne .not_mul
+    inc dword [value_low]
+.not_mul:
+
+    ; Iterate the sub-columns in the column and perform the computation;
+    ; ecx = sub-column index
+    mov ecx, [column_width]
+.sub_column_loop:
+    dec ecx
+    cmp ecx, -1
+    jl .failure
+    je .sub_column_loop_done
+
+    ; Iterate the digits in the sub-column; eax = number, esi = read position, edi = digits left
+    mov eax, [width]
+    inc eax
+    mul dword [height]
+    mov esi, eax
+    neg esi
+    add esi, [last_row_pos]
+    add esi, ecx
+    xor eax, eax
+    mov edi, [height]
+.digit_loop:
+    dec edi
+    cmp edi, 0
+    jl .failure
+    je .digit_loop_done
+    add esi, [width]
+    inc esi
+    cmp byte [esi], ' '
+    je .digit_loop
+    cmp byte [esi], '0'
+    jl .parse_error
+    cmp byte [esi], '9'
+    jg .parse_error
+    mov ebx, 10
+    mul ebx
+    xor ebx, ebx
+    mov bl, [esi]
+    add eax, ebx
+    sub eax, '0'
+    jmp .digit_loop
+.digit_loop_done:
+
+    ; Perform the computation
+    mov ebx, [last_row_pos]
+    cmp byte [ebx], '+'
+    jne .not_plus2
+    add [value_low], eax
+    adc dword [value_high], 0
+    jmp .computation2_done
+.not_plus2:
+    cmp byte [ebx], '*'
+    jne .parse_error
+    mov [tmp1_low], eax
+    mov eax, [value_low]
+    mov [tmp2_low], eax
+    mov edx, [value_high]
+    mov [tmp2_high], edx
+    mov eax, [tmp1_low]
+    mov edx, [tmp2_low]
+    mul edx
+    mov [value_low], eax
+    mov [value_high], edx
+    mov eax, [tmp1_low]
+    mov edx, [tmp2_high]
+    mul edx
+    add [value_high], eax
+.computation2_done:
+
+    ; Proceed to next sub-column
+    jmp .sub_column_loop
+.sub_column_loop_done:
+
+    ; Accumulate the vertical computation result to the grand total
+    mov eax, [value_low]
+    mov edx, [value_high]
+    add [grand_total2_low], eax
+    adc [grand_total2_high], edx
+
     ; If this is the last column, break the loop
     cmp dword [is_last_column], 0
     jne .column_loop_done
@@ -217,6 +307,9 @@ main:
     ; Write output to stdout
     push dword [grand_total_high]
     push dword [grand_total_low]
+    call write_ulong_line_to_stdout
+    push dword [grand_total2_high]
+    push dword [grand_total2_low]
     call write_ulong_line_to_stdout
 
     ; Exit status
