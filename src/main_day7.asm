@@ -13,6 +13,10 @@ section .bss
 input: resb 100000
 input_capacity: equ $ - input
 
+counts_capacity: equ 200
+counts1: resq counts_capacity
+counts2: resq counts_capacity
+
 
 section .text
 
@@ -25,6 +29,10 @@ main:
     %local width:dword
     %local height:dword
     %local split_count:dword
+    %local path_count_low:dword
+    %local path_count_high:dword
+    %local prev_counts:dword
+    %local counts:dword
 
     push ebp
     mov ebp, esp
@@ -75,10 +83,15 @@ main:
     ; Initialize output variable
     mov dword [split_count], 0
 
-    ; Start looping through the input, propagating beams using '|' signs; esi = position
+    ; Check that we have enough capacity for storing the path counts
+    cmp dword [width], counts_capacity
+    jg .failure
+
+    ; Start looping through the input, keeping track of the numbers of paths for each x;
+    ; esi = input read position
     mov esi, input
 
-    ; First, process the first row, replacing 'S' by '|'; ebx = x
+    ; First, process the first row, initializing the path count to 1 for each position with 'S'
     xor ebx, ebx
 .first_row_loop:
     cmp ebx, [width]
@@ -86,7 +99,7 @@ main:
     je .first_row_loop_done
     cmp byte [esi], 'S'
     jne .not_s
-    mov byte [esi], '|'
+    mov dword [counts1+8*ebx], 1
     jmp .first_row_loop_continue
 .not_s:
     cmp byte [esi], '.'
@@ -100,12 +113,32 @@ main:
     jne .failure
     inc esi
 
-    ; Then process the other row, performing splits, propagating beams using '|' sign; edi = y
+    ; We will keep swapping counts1 and counts2 as the backing storage for the path counts as we
+    ; proceed
+    mov dword [counts], counts1
+    mov dword [prev_counts], counts2
+
+    ; Then process the other rows, performing splits, updating counts; edi = y
     mov edi, 1
 .rows_loop:
     cmp edi, [height]
     ja .failure
     je .rows_loop_done
+
+    ; Swap the counts and clear the output counts
+    mov eax, [counts]
+    mov edx, [prev_counts]
+    mov [prev_counts], eax
+    mov [counts], edx
+    xor eax, eax
+    push edi
+    mov edi, [counts]
+    mov ecx, [width]
+    add ecx, ecx
+    rep stosd
+    pop edi
+
+    ; Loop through the elements; ebx = x
     xor ebx, ebx
 .elem_loop:
     cmp ebx, [width]
@@ -113,28 +146,36 @@ main:
     je .elem_loop_done
     cmp byte [esi], '.'
     jne .not_dot
-    mov eax, [width]
-    neg eax
-    cmp byte [esi+eax-1], '|'
-    jne .elem_loop_continue
-    mov byte [esi], '|'
+    mov ecx, [prev_counts]
+    mov eax, [ecx+8*ebx]
+    mov edx, [ecx+8*ebx+4]
+    mov ecx, [counts]
+    add [ecx+8*ebx], eax
+    adc [ecx+8*ebx+4], edx
     jmp .elem_loop_continue
 .not_dot:
     cmp byte [esi], '^'
     jne .not_dot_or_caret
-    mov eax, [width]
-    neg eax
-    cmp byte [esi+eax-1], '|'
-    jne .elem_loop_continue
-    inc dword [split_count]
     cmp ebx, 0
     je .failure
     mov eax, [width]
     dec eax
     cmp ebx, eax
     je .failure
-    mov byte [esi-1], '|'
-    mov byte [esi+1], '|'
+    mov ecx, [prev_counts]
+    mov eax, [ecx+8*ebx]
+    mov edx, [ecx+8*ebx+4]
+    mov ecx, [counts]
+    add [ecx+8*ebx-8], eax
+    adc [ecx+8*ebx-4], edx
+    add [ecx+8*ebx+8], eax
+    adc [ecx+8*ebx+12], edx
+    cmp eax, 0
+    jne .nonzero
+    cmp edx, 0
+    je .elem_loop_continue
+.nonzero:
+    inc dword [split_count]
     jmp .elem_loop_continue
 .not_dot_or_caret:
     cmp byte [esi], '|'
@@ -155,9 +196,29 @@ main:
     cmp byte [esi], 0
     jne .failure
 
+    ; Compute the sum of the counts
+    xor eax, eax
+    xor edx, edx
+    xor ebx, ebx
+    mov ecx, [counts]
+.sum_loop:
+    cmp ebx, [width]
+    ja .failure
+    je .sum_loop_done
+    add eax, [ecx+8*ebx]
+    adc edx, [ecx+8*ebx+4]
+    inc ebx
+    jmp .sum_loop
+.sum_loop_done:
+    mov [path_count_low], eax
+    mov [path_count_high], edx
+
     ; Write output to stdout
     push dword [split_count]
     call write_uint_line_to_stdout
+    push dword [path_count_high]
+    push dword [path_count_low]
+    call write_ulong_line_to_stdout
 
     ; Exit status
     mov eax, 0
