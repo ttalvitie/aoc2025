@@ -340,29 +340,12 @@ main:
     ja .failure
     je .kruskal_loop_done
     cmp edi, [kruskal_round_count]
-    ja .failure
-    je .kruskal_loop_done
-    push dword [esi+PointPair.idx1]
-    call find
-    mov ebx, eax
-    push dword [esi+PointPair.idx2]
-    call find
-    cmp eax, ebx
-    je .kruskal_loop_continue
+    jne .after_kruskal_round_count_reached_handling
 
-    ; Merge the components
-    mov [parent+4*eax], ebx
-    mov ecx, [component_size+4*eax]
-    mov dword [component_size+4*eax], 0
-    add [component_size+4*ebx], ecx
-
-.kruskal_loop_continue:
-    add esi, PointPair_size
-    inc edi
-    jmp .kruskal_loop
-.kruskal_loop_done:
-
+    ; We have reached the number of Kruskal iterations for the first star; let us print the
+    ; solution for that case now
     ; Find the three largest components; esi = root point index
+    push esi
     mov dword [compsize1], 0
     mov dword [compsize2], 0
     mov dword [compsize3], 0
@@ -389,6 +372,7 @@ main:
     inc esi
     jmp .component_loop
 .component_loop_done:
+    pop esi
 
     ; Compute product of top three component sizes and write it to stdout
     mov eax, [compsize1]
@@ -396,6 +380,44 @@ main:
     mul dword [compsize3]
     push eax
     call write_uint_line_to_stdout
+.after_kruskal_round_count_reached_handling:
+
+    ; Continue Kruskal algorithm
+    push dword [esi+PointPair.idx1]
+    call find
+    mov ebx, eax
+    push dword [esi+PointPair.idx2]
+    call find
+    cmp eax, ebx
+    je .kruskal_loop_continue
+
+    ; Merge the components
+    mov [parent+4*eax], ebx
+    mov ecx, [component_size+4*eax]
+    mov dword [component_size+4*eax], 0
+    add [component_size+4*ebx], ecx
+
+    ; If this is the last merge, print the product of the x-coordinates of the points (second star)
+    mov eax, [points_count]
+    cmp [component_size+4*ebx], eax
+    ja .failure
+    jne .kruskal_loop_continue
+
+    mov ecx, [esi+PointPair.idx1]
+    lea ebx, [points+8*ecx]
+    mov eax, [ebx+4*ecx]
+    mov ecx, [esi+PointPair.idx2]
+    lea ebx, [points+8*ecx]
+    mul dword [ebx+4*ecx]
+    push edx
+    push eax
+    call write_ulong_line_to_stdout
+
+.kruskal_loop_continue:
+    add esi, PointPair_size
+    inc edi
+    jmp .kruskal_loop
+.kruskal_loop_done:
 
     ; Exit status
     mov eax, 0
