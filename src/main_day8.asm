@@ -328,7 +328,7 @@ main:
     cmp dword [points_count], 20
     je .set_kruskal_round_count_done
     mov dword [kruskal_round_count], 1000
-.set_kruskal_round_count_done
+.set_kruskal_round_count_done:
 
     ; Run the beginning of the Kruskal algorithm, iterating point pairs ordered by distance
     ; squared and linking them whenever they are in different components;
