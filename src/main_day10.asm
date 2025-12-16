@@ -14,16 +14,41 @@ input: resb 100000
 input_capacity: equ $ - input
 
 target: resd 1
-width: resd 1
 
-buttons_capacity: equ 16
+buttons_capacity: equ 13
 buttons: resd buttons_capacity
 button_sizes: resd buttons_capacity
 buttons_count: resd 1
 
-joltages: resd 32
+joltages_capacity: equ 14
+joltages: resd joltages_capacity
+joltages_count: resd 1
 
-max_button_size: resd 32
+; Prime modulus used for modular arithmetic
+M: equ (1 << 31) - 1
+
+; Augmented matrix representing the equation that the joltages resulting from the button presses
+; must match the joltages (the variables to solve are the button press counts). The matrix is
+; converted to row echelon form with each leading entry 1 with Gaussian elimination using modular
+; arithmetic.
+matrix_stride_bytes: equ 4 * (buttons_capacity + 1)
+matrix: resb joltages_capacity * matrix_stride_bytes
+matrix_rows: equ joltages_count
+matrix_cols: equ buttons_count ; not including last column, as the matrix is augmented
+
+; After gauss_elimination, for each column the pointer to the row where the leading element is in
+; that column or 0 if there is no such row
+leading_element_col_to_row_ptr: resd buttons_capacity
+
+; In search, the current number of button presses and the best found
+current_total_presses: resd 1
+best_total_presses: resd 1
+
+; The current assignment of button presses so far in search
+button_press_counts: resd buttons_capacity
+
+tmp_capacity: equ 32
+tmp: resb tmp_capacity
 
 
 section .text
@@ -50,7 +75,7 @@ solve_first_star:
     ; Try all combinations of buttons to press
     cmp dword [buttons_count], 0
     je .failure
-    cmp dword [buttons_count], 32
+    cmp dword [buttons_count], joltages_capacity
     jae .failure
     mov dword [combination], 1
     mov cl, [buttons_count]
@@ -108,242 +133,31 @@ solve_first_star:
     %pop
 
 
-compute_heuristic:
+; (a, b) -> (a + b) % M
+mod_add:
     %push
     %stacksize flat
 
-    %arg remaining_button_mask:dword
-
-    %assign %$localsize 0
-    %local result:dword
-    %local result2:dword
-    %local result_frac:dword
-    %local max_joltage:dword
+    %arg a:dword
+    %arg b:dword
 
     push ebp
     mov ebp, esp
-    sub esp, %$localsize
 
-    push edi
-    push esi
-    push ebx
+    cmp dword [a], M
+    jae .failure
+    cmp dword [b], M
+    jae .failure
 
-    ; For each joltage, compute the size of the largest remaining button mask containing it
-    ; (store result in array max_button_size)
-    xor edi, edi
-.max_button_size_clear_loop:
-    cmp edi, [width]
-    ja .failure
-    je .max_button_size_clear_loop_done
-    mov dword [max_button_size+4*edi], 0
-    inc edi
-    jmp .max_button_size_clear_loop
-.max_button_size_clear_loop_done:
-    xor ecx, ecx
-.max_button_size_loop:
-    cmp ecx, [buttons_count]
-    ja .failure
-    je .max_button_size_loop_done
-    mov edx, 1
-    shl edx, cl
-    test [remaining_button_mask], edx
-    jz .max_button_size_loop_continue
-    mov esi, ecx
-    push ecx
-    xor ecx, ecx
-.max_button_size_joltage_loop:
-    cmp ecx, [width]
-    ja .failure
-    je .max_button_size_joltage_loop_done
-    mov edx, 1
-    shl edx, cl
-    test [buttons+4*esi], edx
-    jz .max_button_size_joltage_loop_continue
-    mov eax, [button_sizes+4*esi]
-    cmp eax, [max_button_size+4*ecx]
-    jbe .max_button_size_joltage_loop_continue
-    mov [max_button_size+4*ecx], eax
-.max_button_size_joltage_loop_continue:
-    inc ecx
-    jmp .max_button_size_joltage_loop
-.max_button_size_joltage_loop_done:
-    pop ecx
-.max_button_size_loop_continue:
-    inc ecx
-    jmp .max_button_size_loop
-.max_button_size_loop_done:
-
-    ; Compute the heuristic as the ceiling function of the sum over all joltages of the joltage
-    ; divided by the size of the largest remaining button mask containing it. The fractional part
-    ; of the heuristic are in [result_frac]
-    mov dword [result], 0
-    mov dword [result_frac], 0
-    xor edi, edi
-.loop:
-    cmp edi, [width]
-    ja .failure
-    je .loop_done
-
-    ; Skip zero joltages
-    cmp dword [joltages+4*edi], 0
-    je .loop_continue
-
-    ; If the nonzero joltage is not in any remaining button, return infinity (-1)
-    cmp dword [max_button_size+4*edi], 0
-    jne .dead_end_check_done
-    mov dword [result], -1
-    jmp .done
-.dead_end_check_done:
-
-    ; Accumulate the heuristic
-    push dword [max_button_size+4*edi]
-    push dword [joltages+4*edi]
-    push 0
-    call div_ulong_by_uint
-    add [result_frac], eax
-    adc [result], edx
-
-.loop_continue:
-    ; Continue loop over joltages
-    inc edi
-    jmp .loop
-.loop_done:
-
-    ; If the fractional bits are nonzero, increase the result for the ceiling function
-    cmp dword [result_frac], 0
-    je .ceil_done
-    inc dword [result]
-.ceil_done:
-
-    ; In some cases, improve the heuristic by making it at least as large as each joltage
-    mov dword [max_joltage], 0
-    xor edi, edi
-.max_heuristic_loop:
-    cmp edi, [width]
-    ja .failure
-    je .max_heuristic_loop_done
-    mov eax, [joltages+4*edi]
-    cmp eax, [max_joltage]
-    jbe .max_heuristic_loop_continue
-    mov [max_joltage], eax
-.max_heuristic_loop_continue:
-    inc edi
-    jmp .max_heuristic_loop
-.max_heuristic_loop_done:
-    mov eax, [max_joltage]
-    cmp eax, [result]
-    jbe .max_joltage_result_update_done
-    mov [result], eax
-.max_joltage_result_update_done:
-
-    ; For each joltage, compute the size of the largest complement of a button mask containing it
-    ; (store result in array max_button_size)
-    xor edi, edi
-.max_button_size_clear_loop2:
-    cmp edi, [width]
-    ja .failure
-    je .max_button_size_clear_loop_done2
-    mov dword [max_button_size+4*edi], 0
-    inc edi
-    jmp .max_button_size_clear_loop2
-.max_button_size_clear_loop_done2:
-    xor ecx, ecx
-.max_button_size_loop2:
-    cmp ecx, [buttons_count]
-    ja .failure
-    je .max_button_size_loop_done2
-    mov edx, 1
-    shl edx, cl
-    test [remaining_button_mask], edx
-    jz .max_button_size_loop_continue2
-    mov esi, ecx
-    push ecx
-    xor ecx, ecx
-.max_button_size_joltage_loop2:
-    cmp ecx, [width]
-    ja .failure
-    je .max_button_size_joltage_loop_done2
-    mov edx, 1
-    shl edx, cl
-    test [buttons+4*esi], edx
-    jnz .max_button_size_joltage_loop_continue2
-    mov eax, [width]
-    sub eax, [button_sizes+4*esi]
-    cmp eax, [max_button_size+4*ecx]
-    jbe .max_button_size_joltage_loop_continue2
-    mov [max_button_size+4*ecx], eax
-.max_button_size_joltage_loop_continue2:
-    inc ecx
-    jmp .max_button_size_joltage_loop2
-.max_button_size_joltage_loop_done2:
-    pop ecx
-.max_button_size_loop_continue2:
-    inc ecx
-    jmp .max_button_size_loop2
-.max_button_size_loop_done2:
-
-    ; Compute complement-side heuristic to result2
-    mov dword [result2], 0
-    mov dword [result_frac], 0
-    xor edi, edi
-.loop2:
-    cmp edi, [width]
-    ja .failure
-    je .loop_done2
-
-    ; Skip zero complement joltages
-    mov eax, [max_joltage]
-    sub eax, [joltages+4*edi]
-    cmp eax, 0
-    je .loop_continue2
-
-    ; If the nonzero joltage is not in any remaining button, return infinity (-1)
-    cmp dword [max_button_size+4*edi], 0
-    jne .dead_end_check_done2
-    mov dword [result], -1
-    jmp .done
-.dead_end_check_done2:
-
-    ; Accumulate the heuristic
-    push dword [max_button_size+4*edi]
-    mov eax, [max_joltage]
-    sub eax, [joltages+4*edi]
-    push eax
-    push 0
-    call div_ulong_by_uint
-    add [result_frac], eax
-    adc [result2], edx
-
-.loop_continue2:
-    ; Continue loop over joltages
-    inc edi
-    jmp .loop2
-.loop_done2:
-
-    ; If the fractional bits are nonzero, increase the result for the ceiling function
-    cmp dword [result_frac], 0
-    je .ceil_done2
-    inc dword [result2]
-.ceil_done2:
-
-    ; If result2 is better than result, update result
-    mov eax, [result2]
-    cmp eax, [result]
-    jbe .complement_update_done
-    mov [result], eax
-.complement_update_done:
-
+    mov eax, [a]
+    add eax, [b]
+    cmp eax, M
+    jb .done
+    sub eax, M
 .done:
-    ; Return value
-    mov eax, [result]
 
-    pop ebx
-    pop esi
-    pop edi
-
-    add esp, %$localsize
     pop ebp
-    ret 4
+    ret 8
 
 .failure:
     push 4
@@ -352,22 +166,266 @@ compute_heuristic:
     %pop
 
 
-search:
+; (a, b) -> (a - b) % M
+mod_sub:
     %push
     %stacksize flat
 
-    %arg limit:dword
-    %arg remaining_button_mask:dword
+    %arg a:dword
+    %arg b:dword
+
+    push ebp
+    mov ebp, esp
+
+    cmp dword [a], M
+    jae .failure
+    cmp dword [b], M
+    jae .failure
+
+    mov eax, [a]
+    sub eax, [b]
+    cmp eax, 0
+    jge .done
+    add eax, M
+.done:
+
+    pop ebp
+    ret 8
+
+.failure:
+    push 5
+    call exit
+
+    %pop
+
+
+; (a, b) -> (a * b) % M
+mod_mul:
+    %push
+    %stacksize flat
+
+    %arg a:dword
+    %arg b:dword
+
+    push ebp
+    mov ebp, esp
+
+    cmp dword [a], M
+    jae .failure
+    cmp dword [b], M
+    jae .failure
+
+    mov eax, [a]
+    mul dword [b]
+
+    push dword M
+    push edx
+    push eax
+    call div_ulong_by_uint
+    mov eax, ecx
+
+    pop ebp
+    ret 8
+
+.failure:
+    push 6
+    call exit
+
+    %pop
+
+
+mod_inv:
+    %push
+    %stacksize flat
+
+    %arg x:dword
+
+    push ebp
+    mov ebp, esp
+
+    push esi
+    push edi
+    push ebx
+
+    ; Compute modular multiplicative inverse of x by raising it to power M-2 (Fermat's little theorem);
+    ; edi = x ** (1 << a), esi = (M - 2) >> a (looping over a = 0, 1, ...), ebx = result
+    mov edi, [x]
+    mov esi, M - 2
+    mov ebx, 1
+.power_loop:
+    test esi, 1
+    jz .accumulate_done
+    push ebx
+    push edi
+    call mod_mul
+    mov ebx, eax
+.accumulate_done:
+    shr esi, 1
+    cmp esi, 0
+    je .power_loop_done
+    push edi
+    push edi
+    call mod_mul
+    mov edi, eax
+    jmp .power_loop
+.power_loop_done:
+
+    mov eax, ebx
+
+    pop ebx
+    pop edi
+    pop esi
+
+    pop ebp
+    ret 4
+
+.failure:
+    push 14
+    call exit
+
+    %pop
+
+
+print_matrix:
+    %push
+    %stacksize flat
+
+    push ebp
+    mov ebp, esp
+
+    push ebx
+    push esi
+    push edi
+
+    ; Iterate over matrix elements; ebx = row, esi = column, edi = row start
+    xor ebx, ebx
+    mov edi, matrix
+.rows_loop:
+    cmp ebx, [matrix_rows]
+    ja .failure
+    je .rows_loop_done
+    xor esi, esi
+.elems_loop:
+    mov eax, [matrix_cols]
+    inc eax
+    cmp esi, eax
+    ja .failure
+    je .elems_loop_done
+    push edi
+    mov edi, tmp
+    mov ecx, 6
+    mov al, ' '
+    rep stosb
+    pop edi
+    push dword tmp_capacity - 6
+    push dword tmp + 6
+    push dword [edi+4*esi]
+    call uint_to_str
+    xor edx, edx
+    cmp eax, 6
+    jae .padding_done
+    mov edx, 6
+    sub edx, eax
+.padding_done:
+    push eax
+    add dword [esp], edx
+    push dword tmp + 6
+    sub dword [esp], edx
+    call write_all_stdout
+    inc esi
+    jmp .elems_loop
+.elems_loop_done:
+    mov byte [tmp], `\n`
+    push 1
+    push dword tmp
+    call write_all_stdout
+    inc ebx
+    add edi, matrix_stride_bytes
+    jmp .rows_loop
+.rows_loop_done:
+    mov byte [tmp], `\n`
+    push 1
+    push dword tmp
+    call write_all_stdout
+
+    pop edi
+    pop esi
+    pop ebx
+
+    pop ebp
+    ret
+
+.failure:
+    push 8
+    call exit
+
+    %pop
+
+
+; Given (source row, target row, coef), add source row multiplied by coef to target row
+add_row:
+    %push
+    %stacksize flat
+
+    %arg source_row:dword
+    %arg target_row:dword
+    %arg coef:dword
+
+    push ebp
+    mov ebp, esp
+
+    push ebx
+    push esi
+    push edi
+
+    ; Loop over the two rows in sync
+    ; esi = source row position, edi = target row position, ebx = column
+    xor ebx, ebx
+    mov eax, matrix_stride_bytes
+    mul dword [source_row]
+    lea esi, [matrix+eax]
+    mov eax, matrix_stride_bytes
+    mul dword [target_row]
+    lea edi, [matrix+eax]
+.loop:
+    push dword [esi]
+    push dword [coef]
+    call mod_mul
+    push dword [edi]
+    push eax
+    call mod_add
+    mov [edi], eax
+
+    ; Continue looping over the rows
+    inc ebx
+    add esi, 4
+    add edi, 4
+    cmp ebx, [matrix_cols]
+    jbe .loop
+
+    pop edi
+    pop esi
+    pop ebx
+
+    pop ebp
+    ret 12
+
+.failure:
+    push 10
+    call exit
+
+    %pop
+
+
+; Apply Gaussian elimination to the augmented matrix to bring it into row echelon form wih leading
+; elements 1. Returns the number of nonzero rows (the rank) in the main matrix.
+gauss_elimination:
+    %push
+    %stacksize flat
 
     %assign %$localsize 0
-    %local max_joltage:dword
-    %local button_idx:dword
-    %local button_joltage_mask:dword
-    %local max_press_count:dword
-    %local current_press_count:dword
-    %local result:dword
-    %local once_mask:dword
-    %local twice_mask:dword
+    %local rows_done:dword
+    %local remaining_rows_start:dword
 
     push ebp
     mov ebp, esp
@@ -377,231 +435,112 @@ search:
     push esi
     push edi
 
-    ; Set defalt result to 0 (failure)
-    mov dword [result], 0
+    ; Initialize variables to keep track of the completed rows in the elimination
+    mov dword [rows_done], 0
+    mov dword [remaining_rows_start], matrix
 
-    ; Compute the maximum (remainder) joltage
-    mov dword [max_joltage], 0
-    xor edi, edi
-.max_joltage_loop:
-    cmp edi, [width]
-    ja .failure
-    je .max_joltage_loop_done
-    mov eax, [joltages+4*edi]
-    cmp eax, [max_joltage]
-    jbe .max_joltage_loop_continue
-    mov [max_joltage], eax
-.max_joltage_loop_continue:
-    inc edi
-    jmp .max_joltage_loop
-.max_joltage_loop_done:
+    ; Clear the leading element information
+    mov ecx, [matrix_cols]
+    mov edi, leading_element_col_to_row_ptr
+    xor eax, eax
+    rep stosd
 
-    ; If the maximum joltage is 0, we are already done
-    cmp dword [max_joltage], 0
-    jne .finished_check_done
-    mov dword [result], 1
-    jmp .done
-.finished_check_done:
+    ; Loop over columns in the non-augmented part of the matrix; esi = column
+    xor esi, esi
+.main_column_loop:
+    cmp esi, [matrix_cols]
+    ja .failure
+    je .main_column_loop_done
 
-    ; Remove unpressable buttons from the mask
-    xor edi, edi
-.reduce_button_loop:
-    cmp edi, [buttons_count]
+    ; Stop if all rows are already done
+    mov eax, [rows_done]
+    cmp eax, [matrix_rows]
     ja .failure
-    je .reduce_button_loop_done
-    mov ecx, edi
-    mov edx, 1
-    shl edx, cl
-    test [remaining_button_mask], edx
-    jz .reduce_button_loop_continue
-    xor ebx, ebx
-.reduce_joltage_loop:
-    cmp ebx, [width]
+    je .main_column_loop_done
+
+    ; Find the first nonzero element on this column in the remaining rows;
+    ; ebx = row, edi = pointer to element
+    mov ebx, [rows_done]
+    cmp ebx, [matrix_rows]
+    mov edi, [remaining_rows_start]
+    lea edi, [edi+4*esi]
+.find_first_nonzero_loop:
+    cmp ebx, [matrix_rows]
     ja .failure
-    je .reduce_button_loop_continue
-    mov ecx, ebx
-    mov edx, 1
-    shl edx, cl
-    test [buttons+4*edi], edx
-    jz .reduce_joltage_loop_continue
-    cmp dword [joltages+4*ebx], 0
-    jz .reduce_remaining_button_mask
-.reduce_joltage_loop_continue:
+    je .main_column_loop_continue
+    cmp dword [edi], 0
+    jne .first_nonzero_found
     inc ebx
-    jmp .reduce_joltage_loop
-.reduce_remaining_button_mask:
-    mov ecx, edi
-    mov edx, 1
-    shl edx, cl
-    xor [remaining_button_mask], edx
-.reduce_button_loop_continue:
-    inc edi
-    jmp .reduce_button_loop
-.reduce_button_loop_done:
+    add edi, matrix_stride_bytes
+    jmp .find_first_nonzero_loop
 
-    ; Compute heuristic lower bound for the distance to all zeros
-    push dword [remaining_button_mask]
-    call compute_heuristic
+.first_nonzero_found:
+    ; Nonzero element found, add that row to the first remaining row
+    push 1
+    push dword [rows_done]
+    push ebx
+    call add_row
+    ; Jump back to the first remaining row
+    mov ebx, [rows_done]
+    mov edi, [remaining_rows_start]
+    lea edi, [edi+4*esi]
 
-    ; If the heuristic is larger than the limit, give up
-    cmp eax, dword [limit]
-    ja .done
-
-    ; Create mask of joltages that occur in exactly one remaining button
-    mov dword [once_mask], 0
-    mov dword [twice_mask], 0
-    xor edi, edi
-.once_loop:
-    cmp edi, [buttons_count]
-    ja .failure
-    je .once_loop_done
-    mov ecx, edi
-    mov edx, 1
-    shl edx, cl
-    test [remaining_button_mask], edx
-    jz .once_loop_continue
-    mov edx, [buttons+4*edi]
-    mov eax, edx
-    and eax, [once_mask]
-    or [twice_mask], eax
-    or [once_mask], edx
-.once_loop_continue:
-    inc edi
-    jmp .once_loop
-.once_loop_done:
-    mov eax, [twice_mask]
-    xor [once_mask], eax
-
-    ; Pick the button, prioritized first by picking buttons that are the last containing a certain
-    ; joltage and then picking buttons with largest masks overall (to make the heuristic work
-    ; better, as it works better for smaller masks)
-    mov dword [button_idx], -1
-    xor ecx, ecx
-.button_pick_loop:
-    cmp ecx, [buttons_count]
-    ja .failure
-    je .button_pick_loop_done
-    mov edx, 1
-    shl edx, cl
-    test [remaining_button_mask], edx
-    jz .button_pick_loop_continue
-    cmp dword [button_idx], -1
-    je .pick_this_button
-    mov edx, [button_idx]
-    mov edx, [buttons+4*edx]
-    test edx, [once_mask]
-    jz .old_not_closing
-    mov edx, [buttons+4*ecx]
-    test edx, [once_mask]
-    jnz .compare_sizes
-    jmp .button_pick_loop_continue
-.old_not_closing:
-    mov edx, [buttons+4*ecx]
-    test edx, [once_mask]
-    jnz .pick_this_button
-.compare_sizes:
-    mov edx, [button_idx]
-    mov edx, [button_sizes+4*edx]
-    cmp [button_sizes+4*ecx], edx
-    jbe .button_pick_loop_continue
-.pick_this_button:
-    mov [button_idx], ecx
-.button_pick_loop_continue:
-    inc ecx
-    jmp .button_pick_loop
-.button_pick_loop_done:
-    cmp dword [button_idx], -1
-    je .failure
-    mov ecx, [button_idx]
-    mov edx, 1
-    shl edx, cl
-    xor dword [remaining_button_mask], edx
-    mov eax, [buttons+4*ecx]
-    mov [button_joltage_mask], eax
-
-    ; Compute how many times we can press the button
-    mov eax, [limit]
-    mov dword [max_press_count], eax
-    xor ecx, ecx
-.max_press_count_loop:
-    cmp ecx, [width]
-    ja .failure
-    je .max_press_count_loop_done
-    mov edx, 1
-    shl edx, cl
-    test [button_joltage_mask], edx
-    jz .max_press_count_loop_continue
-    mov eax, [joltages+4*ecx]
-    cmp eax, [max_press_count]
-    jae .max_press_count_loop_continue
-    mov [max_press_count], eax
-.max_press_count_loop_continue:
-    inc ecx
-    jmp .max_press_count_loop
-.max_press_count_loop_done:
-
-    ; Consider each button press count (edi)
-    xor edi, edi
-.press_loop:
-    ; Save press count to local variable to enable restore
-    mov [current_press_count], edi
-
-    ; Recursively consider the subproblem after pressing this button edi times and disabling it
-    ; (it has been removed from remaining_button_mask)
-    push dword [remaining_button_mask]
-    push dword [limit]
-    sub dword [esp], edi
-    call search
-
-    ; If the subproblem was solved successfully, then return success here too
+    ; Make the leading element of this row 1 by dividing the row by the current leading element
+    mov eax, [edi]
     cmp eax, 0
-    je .success_check_done
-    mov dword [result], 1
-    jmp .restore_joltages
-.success_check_done:
+    je .failure
+    push eax
+    call mod_inv
+    push 1
+    push eax
+    call mod_sub
+    push eax
+    push ebx
+    push ebx
+    call add_row
+    cmp dword [edi], 1
+    jne .failure
 
-    ; Continue to next button press count unless we have reached the limit
-    inc edi
-    cmp edi, [max_press_count]
-    ja .press_loop_done
-    xor ecx, ecx
-.add_press_loop:
-    cmp ecx, [width]
+    ; Make the next elements on this column zero by subtracting the first remaining row scaled
+    ; from them; ebx = row, edi = pointer to element
+.clear_column_loop:
+    inc ebx
+    add edi, matrix_stride_bytes
+    cmp ebx, [matrix_rows]
     ja .failure
-    je .add_press_loop_done
-    mov edx, 1
-    shl edx, cl
-    test [button_joltage_mask], edx
-    jz .add_press_loop_continue
-    dec dword [joltages+4*ecx]
-.add_press_loop_continue:
-    inc ecx
-    jmp .add_press_loop
-.add_press_loop_done:
-    jmp .press_loop
-.press_loop_done:
+    je .clear_column_loop_done
+    mov eax, [edi]
+    cmp eax, 0
+    je .clear_column_loop_continue
+    push eax
+    push 0
+    call mod_sub
+    push eax
+    push ebx
+    push dword [rows_done]
+    call add_row
+    cmp dword [edi], 0
+    jne .failure
+.clear_column_loop_continue:
+    jmp .clear_column_loop
+.clear_column_loop_done:
 
-    ; Restore original joltages
-.restore_joltages:
-    xor ecx, ecx
-.restore_press_loop:
-    cmp ecx, [width]
-    ja .failure
-    je .restore_press_loop_done
-    mov edx, 1
-    shl edx, cl
-    test [button_joltage_mask], edx
-    jz .restore_press_loop_continue
-    mov eax, [current_press_count]
-    add [joltages+4*ecx], eax
-.restore_press_loop_continue:
-    inc ecx
-    jmp .restore_press_loop
-.restore_press_loop_done:
+    ; Now one more row is done; save the leading element information and advance the local variables
+    mov eax, matrix_stride_bytes
+    mul dword [rows_done]
+    add eax, matrix
+    mov dword [leading_element_col_to_row_ptr+4*esi], eax
+    inc dword [rows_done]
+    add dword [remaining_rows_start], matrix_stride_bytes
 
-.done:
-    ; Return value
-    mov eax, [result]
+.main_column_loop_continue:
+    ; Continue main loop over columns
+    inc esi
+    jmp .main_column_loop
+.main_column_loop_done:
+
+    ; Return the rank
+    mov eax, [rows_done]
 
     pop edi
     pop esi
@@ -609,10 +548,244 @@ search:
 
     add esp, %$localsize
     pop ebp
-    ret 8
+    ret
 
 .failure:
-    push 3
+    push 9
+    call exit
+
+    %pop
+
+
+; Recursively search for solutions, considering the valid assignments of button presses to [count]
+; first buttons (using the modular arithmetic matrix system to reduce the amount of cases to
+; consider). Maintains the current remainder joltages in the joltages array, the button press
+; counts in button_press_counts and [current_total_presses] and [best_total_presses].
+search:
+    %push
+    %stacksize flat
+
+    %arg count:dword
+
+    %assign %$localsize 0
+    %local button_idx:dword
+    %local max_press_count:dword
+
+    push ebp
+    mov ebp, esp
+    sub esp, %$localsize
+
+    push esi
+    push edi
+
+    cmp dword [count], 0
+    jne .count_nonzero
+
+    ; Base case: accept the result if the remainder joltages are 0; otherwise, return immediately
+    xor edi, edi
+.accept_check_loop:
+    cmp edi, [joltages_count]
+    je .accept_check_loop_done
+    cmp dword [joltages+4*edi], 0
+    jne .done
+    inc edi
+    jmp .accept_check_loop
+.accept_check_loop_done:
+
+    ; All result joltages are zero, pdate the best total presses and return
+    mov eax, [current_total_presses]
+    cmp eax, [best_total_presses]
+    jae .done
+    mov [best_total_presses], eax
+    jmp .done
+
+    ; Other cases, where we still have to choose press counts for buttons with indexes from
+    ; [count] - 1 down to 0
+.count_nonzero:
+    mov eax, [count]
+    cmp eax, [buttons_count]
+    ja .failure
+    dec eax
+    mov [button_idx], eax
+
+    ; First, compute the maximum number of presses for this button
+    mov dword [max_press_count], -1
+    xor ecx, ecx
+.maximum_press_count_loop:
+    cmp ecx, [joltages_count]
+    ja .failure
+    je .maximum_press_count_loop_done
+    mov edx, 1
+    shl edx, cl
+    mov eax, [button_idx]
+    test [buttons+4*eax], edx
+    jz .maximum_press_count_loop_continue
+    mov eax, [joltages+4*ecx]
+    cmp eax, [max_press_count]
+    jae .maximum_press_count_loop_continue
+    mov [max_press_count], eax
+.maximum_press_count_loop_continue:
+    inc ecx
+    jmp .maximum_press_count_loop
+.maximum_press_count_loop_done:
+
+    mov eax, [button_idx]
+    cmp dword [leading_element_col_to_row_ptr+4*eax], 0
+    je .free_variable
+
+    ; The case where the number of presses for this button can be computed using back-substitution
+    ; in the augmented matrix
+
+    ; Check that the leading element is 1
+    mov eax, [button_idx]
+    mov edx, [leading_element_col_to_row_ptr+4*eax]
+    cmp dword [edx+4*eax], 1
+    jne .failure
+
+    ; Start generating the number of presses (esi) from the value in the augmented column
+    mov eax, [button_idx]
+    mov eax, [leading_element_col_to_row_ptr+4*eax]
+    mov edx, [matrix_cols]
+    mov esi, [eax+4*edx]
+
+    ; Then loop over the other columns after [button_idx], subtracting the button press counts
+    ; multiplied by the matrix elements; edi = column index
+    mov edi, [button_idx]
+.back_substitution_loop:
+    inc edi
+    cmp edi, [matrix_cols]
+    ja .failure
+    je .back_substitution_loop_done
+    push dword [button_press_counts+4*edi]
+    mov eax, [button_idx]
+    mov eax, [leading_element_col_to_row_ptr+4*eax]
+    push dword [eax+4*edi]
+    call mod_mul
+    push eax
+    push esi
+    call mod_sub
+    mov esi, eax
+    jmp .back_substitution_loop
+.back_substitution_loop_done:
+
+    ; If the resulting button press count is impossible, return
+    cmp esi, [max_press_count]
+    ja .done
+
+    ; Otherwise, apply the button press to button_press_counts, current_total_presses and joltages
+    mov eax, [button_idx]
+    mov [button_press_counts+4*eax], esi
+    add [current_total_presses], esi
+    xor ecx, ecx
+.apply_button_press_loop:
+    cmp ecx, [joltages_count]
+    ja .failure
+    je .apply_button_press_loop_done
+    mov edx, 1
+    shl edx, cl
+    mov eax, [button_idx]
+    test [buttons+4*eax], edx
+    jz .apply_button_press_loop_continue
+    sub dword [joltages+4*ecx], esi
+.apply_button_press_loop_continue:
+    inc ecx
+    jmp .apply_button_press_loop
+.apply_button_press_loop_done:
+
+    ; Recursively search over assignments of press counts to the rest of the buttons
+    push dword [button_idx]
+    call search
+
+    ; Revert the effects of the button press to current_total_presses and joltages
+    sub [current_total_presses], esi
+    xor ecx, ecx
+.revert_button_press_loop:
+    cmp ecx, [joltages_count]
+    ja .failure
+    je .revert_button_press_loop_done
+    mov edx, 1
+    shl edx, cl
+    mov eax, [button_idx]
+    test [buttons+4*eax], edx
+    jz .revert_button_press_loop_continue
+    add dword [joltages+4*ecx], esi
+.revert_button_press_loop_continue:
+    inc ecx
+    jmp .revert_button_press_loop
+.revert_button_press_loop_done:
+
+    ; The back-substitution case is now handled
+    jmp .done
+
+    ; The case where the number of presses for this button is not fixed by the back-substitution
+    ; and thus we need to consider all possible values
+.free_variable:
+
+    ; Loop over button press counts
+    mov eax, [button_idx]
+    mov dword [button_press_counts+4*eax], 0
+.button_press_count_loop:
+
+    ; Recursively search over assignments of press counts to the rest of the buttons
+    push dword [button_idx]
+    call search
+
+    ; Continue loop over button press counts
+    mov edx, [button_idx]
+    mov eax, [max_press_count]
+    cmp dword [button_press_counts+4*edx], eax
+    ja .failure
+    je .button_press_count_loop_done
+    inc dword [button_press_counts+4*edx]
+    xor ecx, ecx
+.press_button_loop:
+    cmp ecx, [joltages_count]
+    ja .failure
+    je .press_button_loop_done
+    mov edx, 1
+    shl edx, cl
+    mov eax, [button_idx]
+    test [buttons+4*eax], edx
+    jz .press_button_loop_continue
+    dec dword [joltages+4*ecx]
+.press_button_loop_continue:
+    inc ecx
+    jmp .press_button_loop
+.press_button_loop_done:
+    inc dword [current_total_presses]
+    jmp .button_press_count_loop
+.button_press_count_loop_done:
+
+    ; Revert the effects of the button presses on joltages and current_total_presses
+    mov eax, [max_press_count]
+    sub [current_total_presses], eax
+    xor ecx, ecx
+.unpress_button_loop:
+    cmp ecx, [joltages_count]
+    ja .failure
+    je .unpress_button_loop_done
+    mov edx, 1
+    shl edx, cl
+    mov eax, [button_idx]
+    test [buttons+4*eax], edx
+    jz .unpress_button_loop_continue
+    mov eax, [max_press_count]
+    add dword [joltages+4*ecx], eax
+.unpress_button_loop_continue:
+    inc ecx
+    jmp .unpress_button_loop
+.unpress_button_loop_done:
+
+.done:
+    pop edi
+    pop esi
+
+    add esp, %$localsize
+    pop ebp
+    ret 4
+
+.failure:
+    push 13
     call exit
 
     %pop
@@ -622,39 +795,110 @@ solve_second_star:
     %push
     %stacksize flat
 
+    %assign %$localsize 0
+    %local rank:dword
+
     push ebp
     mov ebp, esp
+    sub esp, %$localsize
 
     push ebx
     push esi
+    push edi
 
-    ; Generate full button mask (esi)
-    mov esi, 1
-    mov ecx, [buttons_count]
-    shl esi, cl
-    dec esi
-
-    ; Use iterative deepening A* to find the minimum number of button presses (ebx)
+    ; Initialize matrix; ebx = row, esi = column, edi = row start
     xor ebx, ebx
-.loop:
-    push esi
-    push ebx
-    call search
-    cmp eax, 0
-    jne .loop_done
+    mov edi, matrix
+.matrix_init_rows_loop:
+    cmp ebx, [matrix_rows]
+    ja .failure
+    je .matrix_init_rows_loop_done
+    xor esi, esi
+.matrix_init_elems_loop:
+    cmp esi, [buttons_count]
+    ja .failure
+    je .matrix_init_elems_loop_done
+    mov dword [edi+4*esi], 0
+    mov edx, 1
+    mov ecx, ebx
+    shl edx, cl
+    test [buttons+4*esi], edx
+    jz .elem_init_done
+    inc dword [edi+4*esi]
+.elem_init_done:
+    inc esi
+    jmp .matrix_init_elems_loop
+.matrix_init_elems_loop_done:
+    mov eax, [joltages+4*ebx]
+    cmp eax, M
+    jae .failure
+    mov [edi+4*esi], eax
     inc ebx
-    jmp .loop
-.loop_done:
-    mov eax, ebx
+    add edi, matrix_stride_bytes
+    jmp .matrix_init_rows_loop
+.matrix_init_rows_loop_done:
 
+    ; Use Gauss elimination to reduce the matrix to row echelon form
+    call gauss_elimination
+    mov [rank], eax
+
+    ;call print_matrix
+
+    ; Check that the augmented column is all zeros in the rows where the main matrix is zero; this
+    ; is required for the system to be solvable; ebx = row, edi = position
+    mov ebx, [rank]
+    mov eax, matrix_stride_bytes
+    mul ebx
+    mov edx, [matrix_cols]
+    lea edi, [matrix+4*edx+eax]
+.solvable_check_loop:
+    cmp ebx, [matrix_rows]
+    ja .failure
+    je .solvable_check_loop_done
+    cmp dword [edi], 0
+    jne .system_not_solvable
+    inc ebx
+    add edi, matrix_stride_bytes
+    jmp .solvable_check_loop
+.solvable_check_loop_done:
+
+    ; Initialize state variables for search
+    mov dword [current_total_presses], 0
+    mov dword [best_total_presses], -1
+
+    ; Recursively search for minimum number of button presses
+    push dword [buttons_count]
+    call search
+
+    ; Check that state was reverted correctly
+    cmp dword [current_total_presses], 0
+    jne .failure
+
+    ; Check that we found a solution
+    cmp dword [best_total_presses], -1
+    je .solution_not_found
+
+    ; Return minimum number of total presses
+    mov eax, [best_total_presses]
+
+    pop edi
     pop esi
     pop ebx
 
+    add esp, %$localsize
     pop ebp
     ret
 
 .failure:
     push 3
+    call exit
+
+.system_not_solvable:
+    push 11
+    call exit
+
+.solution_not_found:
+    push 12
     call exit
 
     %pop
@@ -693,19 +937,19 @@ main:
     cmp byte [esi], 0
     je .input_loop_done
 
-    ; Read the target pattern in [target] and its width in [width]; edi = current bit
+    ; Read the target pattern in [target] and its width in [joltages_count]; edi = current bit
     cmp byte [esi], '['
     jne .failure
     inc esi
     mov dword [target], 0
-    mov dword [width], 0
+    mov dword [joltages_count], 0
     mov edi, 1
 .target_bit_loop:
     cmp byte [esi], ']'
     je .target_bit_loop_done
     cmp edi, 0
     je .failure
-    inc dword [width]
+    inc dword [joltages_count]
     cmp byte [esi], '.'
     je .bit_update_done
     cmp byte [esi], '#'
@@ -738,7 +982,7 @@ main:
     push esi
     call parse_uint
     mov esi, edx
-    cmp eax, [width]
+    cmp eax, [joltages_count]
     jae .failure
     mov edx, 1
     mov cl, al
@@ -761,7 +1005,7 @@ main:
 .buttons_loop_done:
 
     ; Read joltage requirements in a loop; edi = joltage index
-    cmp dword [width], 0
+    cmp dword [joltages_count], 0
     je .failure
     cmp byte [esi], '{'
     jne .failure
@@ -773,7 +1017,7 @@ main:
     mov esi, edx
     mov [joltages+4*edi], eax
     inc edi
-    cmp edi, [width]
+    cmp edi, [joltages_count]
     ja .failure
     je .joltage_loop_done
     cmp byte [esi], ','
